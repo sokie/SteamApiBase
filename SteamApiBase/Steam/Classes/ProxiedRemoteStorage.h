@@ -12,7 +12,13 @@
 
 class ProxiedRemoteStorage
 {
+
+	static std::vector<std::string> Results;
+
+	static bool ListFiles(std::string Path);
+
 public:
+	static void		CreateDir(std::string Path, bool isFile);
     static bool    FileWrite( const char *pchFile, const void *pvData, int32 cubData );
     static int32   FileRead( const char *pchFile, void *pvData, int32 cubDataToRead );
     static bool    FileForget( const char *pchFile );

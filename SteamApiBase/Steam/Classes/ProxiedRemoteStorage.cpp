@@ -10,15 +10,81 @@
 
 #include "../../StdInc.h"
 
+std::vector<std::string> ProxiedRemoteStorage::Results;
+
+void ProxiedRemoteStorage::CreateDir(std::string Path, bool isFile)
+{
+	char opath[MAX_PATH];
+	char *p;
+	size_t len;
+
+	if (isFile)
+	{
+		if (Path.find_last_of("/\\") != std::string::npos) Path = Path.substr(0, Path.find_last_of("/\\"));
+		else return;
+	}
+
+	strncpy_s(opath, Path.c_str(), sizeof(opath));
+	len = strlen(opath);
+
+	if (opath[len - 1] == L'/')
+	{
+		opath[len - 1] = L'\0';
+	}
+
+	for (p = opath; *p; p++)
+	{
+		if (*p == L'/' || *p == L'\\')
+		{
+			*p = L'\0';
+
+			if (_access(opath, 0))
+			{
+				_mkdir(opath);
+			}
+
+			*p = L'\\';
+		}
+	}
+
+	if (_access(opath, 0))
+	{
+		_mkdir(opath);
+	}
+}
+
 bool ProxiedRemoteStorage::FileWrite( const char *pchFile, const void *pvData, int32 cubData )
 {
     HHSDBG();
-    return true;
+
+	ProxiedRemoteStorage::CreateDir("storage\\", true);
+
+	std::string FilePath;
+
+	FilePath.append("storage\\");
+	FilePath.append(pchFile);
+
+	std::ofstream File(FilePath, std::ios::binary);
+
+	File.write((const char *)pvData, cubData);
+	File.close();
+
+	return true;
 }
 int32 ProxiedRemoteStorage::FileRead( const char *pchFile, void *pvData, int32 cubDataToRead )
 {
     HHSDBG();
-    return 0;
+
+	std::string FilePath;
+
+	FilePath.append("storage\\");
+	FilePath.append(pchFile);
+
+	std::ifstream File(FilePath, std::ios::binary);
+	int64_t ReadSize = min(cubDataToRead, GetFileSize(FilePath.c_str()));
+	cubDataToRead = (uint32_t)ReadSize;
+	File.read((char *)pvData, ReadSize);
+	return cubDataToRead;
 }
 bool ProxiedRemoteStorage::FileForget( const char *pchFile )
 {
@@ -28,7 +94,11 @@ bool ProxiedRemoteStorage::FileForget( const char *pchFile )
 bool ProxiedRemoteStorage::FileDelete( const char *pchFile )
 {
     HHSDBG();
-    return true;
+	if (pchFile != NULL && remove(pchFile))
+	{
+		return true;
+	}
+	return false;
 }
 SteamAPICall_t ProxiedRemoteStorage::FileShare( const char *pchFile )
 {
@@ -66,7 +136,12 @@ EResult ProxiedRemoteStorage::FileWriteStreamCancel( GID_t hStream )
 bool ProxiedRemoteStorage::FileExists( const char *pchFile )
 {
     HHSDBG();
-    return true;
+	std::string FilePath;
+
+	FilePath.append("storage\\");
+	FilePath.append(pchFile);
+
+	return (GetFileAttributesA(FilePath.c_str()) != INVALID_FILE_ATTRIBUTES);
 }
 bool ProxiedRemoteStorage::FilePersisted( const char *pchFile )
 {
@@ -76,12 +151,26 @@ bool ProxiedRemoteStorage::FilePersisted( const char *pchFile )
 int32 ProxiedRemoteStorage::GetFileSize( const char *pchFile )
 {
     HHSDBG();
-    return 0;
+	std::ifstream File(pchFile, std::ios::binary);
+	std::streamsize Size = 0;
+
+	File.seekg(0, std::ios::end);
+	Size = File.tellg();
+	File.seekg(0, std::ios::beg);
+
+	File.close();
+	return Size;
 }
 int64 ProxiedRemoteStorage::GetFileTimestamp( const char *pchFile )
 {
     HHSDBG();
-    return 0;
+	HANDLE FileHandle = CreateFileA(pchFile, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+	FILETIME CreationTime;
+
+	GetFileTime(FileHandle, &CreationTime, NULL, NULL);
+	CloseHandle(FileHandle);
+
+	return (*(uint64_t *)&CreationTime / 10000000 - 11644473600LL);
 }
 ERemoteStoragePlatform ProxiedRemoteStorage::GetSyncPlatforms( const char *pchFile )
 {
@@ -93,19 +182,71 @@ ERemoteStoragePlatform ProxiedRemoteStorage::GetSyncPlatforms( const char *pchFi
 int32 ProxiedRemoteStorage::GetFileCount()
 {
     HHSDBG();
-    return 0;
+	ListFiles("storage\\");
+	return Results.size();
 }
 const char *ProxiedRemoteStorage::GetFileNameAndSize( int iFile, int32 *pnFileSizeInBytes )
 {
     HHSDBG();
-    return "";
+	ListFiles("storage\\");
+
+	std::string fileName = ProxiedRemoteStorage::Results.at(iFile);
+	std::ifstream File(fileName, std::ios::binary);
+	std::streamsize Size = 0;
+
+	File.seekg(0, std::ios::end);
+	Size = File.tellg();
+	File.seekg(0, std::ios::beg);
+
+	File.close();
+	*pnFileSizeInBytes = Size;
+
+	return fileName.c_str();
+}
+
+bool ProxiedRemoteStorage::ListFiles(std::string Path)
+{
+	WIN32_FIND_DATA FindFileData;
+	HANDLE hFind;
+	bool Result = false;
+
+	ProxiedRemoteStorage::Results.clear();
+
+	// Append trailing slash.
+	if (Path.back() != '\\')
+	{
+		Path.append("\\");
+	}
+
+	// Filename.
+	Path.append("*");
+
+	hFind = FindFirstFileA(Path.c_str(), &FindFileData);
+
+	if (hFind != INVALID_HANDLE_VALUE)
+	{
+		do
+		{
+			// If not a directory.
+			if (!(FindFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+			{
+				ProxiedRemoteStorage::Results.push_back(FindFileData.cFileName);
+				Result = true;
+			}
+		} while (FindNextFileA(hFind, &FindFileData));
+		FindClose(hFind);
+	}
+
+	return Result;
 }
 
 // configuration management
 bool ProxiedRemoteStorage::GetQuota( int32 *pnTotalBytes, int32 *puAvailableBytes )
 {
     HHSDBG();
-    return true;
+	*pnTotalBytes = 0x10000000;
+	*puAvailableBytes = 0x10000000;
+	return true;
 }
 bool ProxiedRemoteStorage::IsCloudEnabledForAccount()
 {
